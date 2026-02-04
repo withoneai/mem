@@ -1,0 +1,3 @@
+module.exports=[46683,a=>{"use strict";a.i(18413),a.i(79419);var b=a.i(71794);let c={alt:"mem - Memory for AI agents",contentType:"image/png",runtime:"edge",size:{width:1200,height:630}};async function d(a){let{__metadata_id__:d,...e}=await a.params,f=(0,b.fillMetadataSegment)("/",e,"opengraph-image");return[function(a,b){let c={alt:a.alt,type:a.contentType||"image/png",url:f+"?c9603840b91f394f"},{size:d}=a;return d&&(c.width=d.width,c.height=d.height),c}(c,0)]}a.s(["default",0,d],46683)}];
+
+//# sourceMappingURL=www_src_app_opengraph-image--metadata_b9596603.js.map

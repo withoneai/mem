@@ -7,7 +7,7 @@ Memory for AI agents. Simple, fast, works anywhere.
 ## Quick Start
 
 ```bash
-npm install @anthropic/mem
+npm install @withone/mem
 mem init
 ```
 
@@ -69,7 +69,7 @@ High-weight items always surface. Frequently used items rise. Old unused items f
 ## TypeScript API
 
 ```typescript
-import { add, search, context, link } from '@anthropic/mem';
+import { add, search, context, link } from '@withone/mem';
 
 // Add a memory
 const record = await add('decision', {
