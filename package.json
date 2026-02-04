@@ -1,0 +1,54 @@
+{
+  "name": "@anthropic/mem",
+  "version": "0.1.0",
+  "description": "Memory for AI agents. Simple, fast, works anywhere.",
+  "keywords": [
+    "ai",
+    "memory",
+    "agents",
+    "supabase",
+    "knowledge",
+    "graph",
+    "mem"
+  ],
+  "author": "Moe Abbas",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthropics/mem"
+  },
+  "homepage": "https://mem.now",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "mem": "./bin/mem"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "skills"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.0.0",
+    "@supabase/supabase-js": "^2.49.1",
+    "commander": "^12.1.0",
+    "openai": "^4.77.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

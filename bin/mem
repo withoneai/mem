@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# Recall CLI wrapper
+# Loads .env and runs the CLI
+#
+
+set -e
+
+# Find the project root (where package.json is)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Load .env from current working directory (preferred) or project root (fallback)
+if [ -f ".env" ]; then
+  set -a
+  source ".env"
+  set +a
+elif [ -f "$PROJECT_ROOT/.env" ]; then
+  set -a
+  source "$PROJECT_ROOT/.env"
+  set +a
+fi
+
+# Check for required env vars
+if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_SERVICE_KEY" ]; then
+  echo "Error: SUPABASE_URL and SUPABASE_SERVICE_KEY must be set"
+  echo ""
+  echo "Create a .env file with:"
+  echo "  SUPABASE_URL=https://your-project.supabase.co"
+  echo "  SUPABASE_SERVICE_KEY=your-service-key"
+  echo "  OPENAI_API_KEY=your-openai-key  # Optional, for embeddings"
+  exit 1
+fi
+
+# Run the CLI
+exec node "$PROJECT_ROOT/dist/cli.js" "$@"
