@@ -51,6 +51,13 @@ import {
   flush,
   weight,
   migrate,
+  addExternalRef,
+  findByExternalRef,
+  listExternalRefs,
+  findByKey,
+  upsertByKeys,
+  addKeys,
+  removeKeys,
 } from "./client.js";
 import { SCHEMA_VERSION, getMigrationSQL } from "./schema.js";
 
@@ -68,20 +75,33 @@ program
 program
   .command("add <type> <json>")
   .description("Add a new memory")
-  .action(async (type: string, jsonStr: string) => {
+  .option("-k, --keys <keys>", "Comma-separated identity keys")
+  .action(async (type: string, jsonStr: string, options: { keys?: string }) => {
     try {
       const data = JSON.parse(jsonStr);
       const tags = data.tags;
       const weightVal = data.weight;
+      const dataKeys = data.keys;
       delete data.tags;
       delete data.weight;
+      delete data.keys;
 
-      const result = await add(type, data, { tags, weight: weightVal });
+      // Merge keys from --keys flag and data.keys
+      let keys: string[] | undefined;
+      if (options.keys) {
+        keys = options.keys.split(",").map((k) => k.trim());
+      }
+      if (Array.isArray(dataKeys)) {
+        keys = [...(keys || []), ...dataKeys];
+      }
+
+      const result = await add(type, data, { tags, keys, weight: weightVal });
       if (result) {
         const name = data.content?.slice(0, 50) || data.topic || data.title || result.id;
         console.log(`Added ${type}: ${name}`);
         console.log(`ID: ${result.id}`);
         if (weightVal) console.log(`Weight: ${weightVal}`);
+        if (keys?.length) console.log(`Keys: ${keys.join(", ")}`);
       } else {
         console.error("Failed to add memory");
         process.exit(1);
@@ -94,10 +114,23 @@ program
 
 program
   .command("get <id>")
-  .description("Get a memory by ID")
+  .description("Get a memory by ID or key")
   .option("--with-links", "Include linked records")
   .action(async (id: string, options: { withLinks?: boolean }) => {
-    const result = await get(id, options.withLinks);
+    // Auto-detect: UUID starts with 8 hex chars followed by a dash
+    const isUuid = /^[0-9a-f]{8}-/.test(id);
+    let result;
+
+    if (isUuid) {
+      result = await get(id, options.withLinks);
+    } else {
+      // Treat as a key
+      result = await findByKey(id);
+      if (result && options.withLinks) {
+        result = await get(result.id, true);
+      }
+    }
+
     if (result) {
       console.log(JSON.stringify(result, null, 2));
     } else {
@@ -166,6 +199,77 @@ program
   });
 
 // =============================================================================
+// Key-Based Commands
+// =============================================================================
+
+program
+  .command("upsert <type> <json>")
+  .description("Upsert a memory by keys (insert or update)")
+  .option("-k, --keys <keys>", "Comma-separated identity keys (required)")
+  .action(async (type: string, jsonStr: string, options: { keys?: string }) => {
+    try {
+      const data = JSON.parse(jsonStr);
+      const tags = data.tags;
+      const weightVal = data.weight;
+      const dataKeys = data.keys;
+      delete data.tags;
+      delete data.weight;
+      delete data.keys;
+
+      let keys: string[] = [];
+      if (options.keys) {
+        keys.push(...options.keys.split(",").map((k) => k.trim()));
+      }
+      if (Array.isArray(dataKeys)) {
+        keys.push(...dataKeys);
+      }
+
+      if (keys.length === 0) {
+        console.error("Keys required. Use --keys or include keys in JSON.");
+        process.exit(1);
+      }
+
+      const result = await upsertByKeys(type, data, keys, { tags, weight: weightVal });
+      if (result) {
+        const name = data.content?.slice(0, 50) || data.topic || data.title || result.record.id;
+        console.log(`${result.action === "inserted" ? "Inserted" : "Updated"} ${type}: ${name}`);
+        console.log(`ID: ${result.record.id}`);
+        console.log(`Action: ${result.action}`);
+      } else {
+        console.error("Failed to upsert memory");
+        process.exit(1);
+      }
+    } catch (error) {
+      console.error("Error:", (error as Error).message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("add-key <id> <key>")
+  .description("Add a key to a memory")
+  .action(async (id: string, key: string) => {
+    if (await addKeys(id, [key])) {
+      console.log(`Added key "${key}" to ${id}`);
+    } else {
+      console.error("Failed to add key");
+      process.exit(1);
+    }
+  });
+
+program
+  .command("remove-key <id> <key>")
+  .description("Remove a key from a memory")
+  .action(async (id: string, key: string) => {
+    if (await removeKeys(id, [key])) {
+      console.log(`Removed key "${key}" from ${id}`);
+    } else {
+      console.error("Failed to remove key");
+      process.exit(1);
+    }
+  });
+
+// =============================================================================
 // Link Commands
 // =============================================================================
 
@@ -224,6 +328,73 @@ program
       console.log(`\n${results.length} linked memories`);
     }
   );
+
+// =============================================================================
+// External Reference Commands
+// =============================================================================
+
+program
+  .command("ref <record_id> <system> <external_id>")
+  .description("Add an external reference to a record")
+  .option("--url <url>", "External URL (deep link)")
+  .action(
+    async (
+      recordId: string,
+      system: string,
+      externalId: string,
+      options: { url?: string }
+    ) => {
+      const result = await addExternalRef(recordId, system, externalId, {
+        url: options.url,
+      });
+      if (result) {
+        console.log(`Added ref: ${system}:${externalId} -> ${recordId}`);
+        if (options.url) console.log(`URL: ${options.url}`);
+      } else {
+        console.error("Failed to add external ref");
+        process.exit(1);
+      }
+    }
+  );
+
+program
+  .command("refs <record_id>")
+  .description("List external references for a record")
+  .action(async (recordId: string) => {
+    const refs = await listExternalRefs(recordId);
+    if (refs.length === 0) {
+      console.log("No external references");
+      return;
+    }
+    for (const ref of refs) {
+      console.log(`${ref.system}:${ref.external_id}`);
+      if (ref.external_url) console.log(`  URL: ${ref.external_url}`);
+      console.log(`  Synced: ${ref.last_synced_at}`);
+    }
+    console.log(`\n${refs.length} references`);
+  });
+
+program
+  .command("find-ref <system> <external_id>")
+  .description("Find a record by external reference")
+  .action(async (system: string, externalId: string) => {
+    const result = await findByExternalRef(system, externalId);
+    if (result) {
+      const data = result.record.data as Record<string, unknown>;
+      const name =
+        (data.content as string)?.slice(0, 50) ||
+        (data.topic as string) ||
+        (data.title as string) ||
+        (data.name as string) ||
+        result.record.id;
+      console.log(`Found: ${result.record.type}: ${name}`);
+      console.log(`ID: ${result.record.id}`);
+      console.log(JSON.stringify(result.record, null, 2));
+    } else {
+      console.log(`No record found for ${system}:${externalId}`);
+      process.exit(1);
+    }
+  });
 
 // =============================================================================
 // Search Commands

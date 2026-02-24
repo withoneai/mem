@@ -1,6 +1,6 @@
 {
-  "name": "@anthropic/mem",
-  "version": "0.1.0",
+  "name": "@withone/mem",
+  "version": "0.2.0",
   "description": "Memory for AI agents. Simple, fast, works anywhere.",
   "keywords": [
     "ai",
@@ -9,13 +9,16 @@
     "supabase",
     "knowledge",
     "graph",
-    "mem"
+    "mem",
+    "claude-code",
+    "llm",
+    "vector-search"
   ],
-  "author": "Moe Abbas",
+  "author": "Moe Katib",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/anthropics/mem"
+    "url": "https://github.com/withoneai/mem"
   },
   "homepage": "https://mem.now",
   "type": "module",
@@ -50,5 +53,8 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

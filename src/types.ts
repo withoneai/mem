@@ -11,6 +11,7 @@ export interface MemRecord {
   type: string;
   data: Record<string, unknown>;
   tags?: string[];
+  keys?: string[];
   embedding?: number[];
   searchable_text?: string;
   weight: number;
@@ -65,6 +66,7 @@ export interface ContextResult {
   type: string;
   data: Record<string, unknown>;
   tags?: string[];
+  keys?: string[];
   weight: number;
   access_count: number;
   relevance_score: number;
@@ -76,12 +78,14 @@ export interface ContextResult {
 
 export interface AddRecordOptions {
   tags?: string[];
+  keys?: string[];
   weight?: number;
   generateEmbedding?: boolean;
 }
 
 export interface UpdateRecordOptions {
   tags?: string[];
+  keys?: string[];
   regenerateEmbedding?: boolean;
 }
 
@@ -105,6 +109,26 @@ export interface LinkedOptions {
 }
 
 // =============================================================================
+// External References
+// =============================================================================
+
+export interface ExternalRef {
+  id: string;
+  record_id: string;
+  system: string;
+  external_id: string;
+  external_url?: string;
+  metadata?: Record<string, unknown>;
+  last_synced_at: string;
+  created_at: string;
+}
+
+export interface AddExternalRefOptions {
+  url?: string;
+  metadata?: Record<string, unknown>;
+}
+
+// =============================================================================
 // Linked Record Result
 // =============================================================================
 
@@ -115,4 +139,13 @@ export interface LinkedRecord {
   relation: string;
   bidirectional: boolean;
   link_metadata?: Record<string, unknown>;
+}
+
+// =============================================================================
+// Upsert Result
+// =============================================================================
+
+export interface UpsertResult {
+  record: MemRecord;
+  action: "inserted" | "updated";
 }

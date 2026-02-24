@@ -36,6 +36,18 @@ export {
   flush,
   weight,
 
+  // Key-Based Operations
+  findByKey,
+  upsertByKeys,
+  addKeys,
+  removeKeys,
+
+  // External References
+  addExternalRef,
+  findByExternalRef,
+  listExternalRefs,
+  touchExternalRef,
+
   // Migration
   migrate,
 
@@ -49,9 +61,12 @@ export type {
   MemRecord,
   MemRecordWithLinks,
   MemLink,
+  ExternalRef,
+  AddExternalRefOptions,
   SearchResult,
   ContextResult,
   LinkedRecord,
+  UpsertResult,
   AddRecordOptions,
   UpdateRecordOptions,
   SearchOptions,

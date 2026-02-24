@@ -8,6 +8,8 @@ import OpenAI from "openai";
 import type {
   MemRecord,
   MemRecordWithLinks,
+  ExternalRef,
+  AddExternalRefOptions,
   SearchResult,
   ContextResult,
   LinkedRecord,
@@ -16,6 +18,7 @@ import type {
   SearchOptions,
   ContextOptions,
   LinkedOptions,
+  UpsertResult,
 } from "./types.js";
 
 // =============================================================================
@@ -111,7 +114,7 @@ export async function add(
   data: Record<string, unknown>,
   options: AddRecordOptions = {}
 ): Promise<MemRecord | null> {
-  const { tags, weight, generateEmbedding = true } = options;
+  const { tags, keys, weight, generateEmbedding = true } = options;
   const db = getSupabase();
 
   const insertData: Record<string, unknown> = {
@@ -119,6 +122,10 @@ export async function add(
     data,
     tags: tags || extractTags(data),
   };
+
+  if (keys?.length) {
+    insertData.keys = keys;
+  }
 
   if (weight !== undefined && weight >= 1 && weight <= 10) {
     insertData.weight = weight;
@@ -217,7 +224,7 @@ export async function update(
   data?: Record<string, unknown>,
   options: UpdateRecordOptions = {}
 ): Promise<MemRecord | null> {
-  const { tags, regenerateEmbedding = true } = options;
+  const { tags, keys, regenerateEmbedding = true } = options;
   const db = getSupabase();
 
   const existing = await get(id);
@@ -244,6 +251,10 @@ export async function update(
 
   if (tags !== undefined) {
     updateData.tags = tags;
+  }
+
+  if (keys !== undefined) {
+    updateData.keys = keys;
   }
 
   if (Object.keys(updateData).length === 0) {
@@ -397,7 +408,53 @@ export async function search(
     return [];
   }
 
-  const results = data || [];
+  let results: SearchResult[] = data || [];
+
+  // Boost name matches for short queries (1-2 words) where hybrid search
+  // tends to drown out exact name hits with semantically similar records
+  const wordCount = query.trim().split(/\s+/).length;
+  if (wordCount <= 2 && query.length <= 30) {
+    const pattern = `%${query}%`;
+    let nameQuery = db
+      .from("mem_records")
+      .select("id, type, data, tags")
+      .or(`data->>name.ilike.${pattern},data->>title.ilike.${pattern},data->>topic.ilike.${pattern}`)
+      .eq("status", "active");
+
+    if (type) {
+      nameQuery = nameQuery.eq("type", type);
+    }
+
+    const { data: nameHits, error: nameError } = await nameQuery.limit(5);
+    if (nameError) {
+      console.error("Name boost query failed:", nameError.message);
+    }
+
+    if (nameHits && nameHits.length > 0) {
+      const resultIds = new Set(results.map((r) => r.id));
+      const boostScore = results.length > 0 ? results[0].combined_score + 0.01 : 1.0;
+
+      // Boost existing results that match by name
+      const nameHitIds = new Set(nameHits.map((h: Record<string, unknown>) => h.id as string));
+      const boosted = results.filter((r) => nameHitIds.has(r.id)).map((r) => ({ ...r, combined_score: boostScore }));
+      const rest = results.filter((r) => !nameHitIds.has(r.id));
+
+      // Add name hits not already in results
+      const newHits: SearchResult[] = nameHits
+        .filter((h: Record<string, unknown>) => !resultIds.has(h.id as string))
+        .map((h: Record<string, unknown>) => ({
+          id: h.id as string,
+          type: h.type as string,
+          data: h.data as Record<string, unknown>,
+          tags: h.tags as string[],
+          fts_rank: 0,
+          semantic_rank: 0,
+          combined_score: boostScore,
+        }));
+
+      results = [...boosted, ...newHits, ...rest].slice(0, limit);
+    }
+  }
 
   // Track access for returned results
   if (trackAccess && results.length > 0) {
@@ -562,6 +619,245 @@ export async function weight(recordId: string, value: number): Promise<boolean> 
   }
 
   return true;
+}
+
+// =============================================================================
+// Key-Based Operations
+// =============================================================================
+
+/**
+ * Find a record by one of its keys
+ */
+export async function findByKey(key: string): Promise<MemRecord | null> {
+  const db = getSupabase();
+
+  const { data, error } = await db.rpc("mem_find_by_key", { p_key: key });
+
+  if (error) {
+    console.error("Error finding by key:", error);
+    return null;
+  }
+
+  if (!data || data.length === 0) return null;
+  return data[0] as MemRecord;
+}
+
+/**
+ * Upsert a record by keys. If any key matches an existing record, update it.
+ * Otherwise insert a new record.
+ */
+export async function upsertByKeys(
+  type: string,
+  data: Record<string, unknown>,
+  keys: string[],
+  options: { tags?: string[]; weight?: number } = {}
+): Promise<UpsertResult | null> {
+  const db = getSupabase();
+  const { tags, weight } = options;
+
+  // Generate embedding
+  let embedding: number[] | null = null;
+  if (hasOpenAI()) {
+    const searchableText = extractSearchableText(data);
+    if (searchableText) {
+      embedding = await getEmbedding(searchableText);
+    }
+  }
+
+  const { data: result, error } = await db.rpc("mem_upsert_by_keys", {
+    p_type: type,
+    p_data: data,
+    p_tags: tags || extractTags(data),
+    p_keys: keys,
+    p_weight: weight || null,
+    p_embedding: embedding,
+  });
+
+  if (error) {
+    console.error("Error upserting by keys:", error);
+    return null;
+  }
+
+  if (!result || result.length === 0) return null;
+
+  const { id, action } = result[0];
+  const record = await get(id);
+  if (!record) return null;
+
+  return { record, action };
+}
+
+/**
+ * Add keys to an existing record
+ */
+export async function addKeys(
+  id: string,
+  newKeys: string[]
+): Promise<boolean> {
+  const db = getSupabase();
+
+  const record = await get(id);
+  if (!record) return false;
+
+  const existing = record.keys || [];
+  const merged = [...new Set([...existing, ...newKeys])];
+
+  const { error } = await db
+    .from("mem_records")
+    .update({ keys: merged })
+    .eq("id", id);
+
+  if (error) {
+    console.error("Error adding keys:", error);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Remove keys from an existing record
+ */
+export async function removeKeys(
+  id: string,
+  keysToRemove: string[]
+): Promise<boolean> {
+  const db = getSupabase();
+
+  const record = await get(id);
+  if (!record) return false;
+
+  const existing = record.keys || [];
+  const removeSet = new Set(keysToRemove);
+  const filtered = existing.filter((k) => !removeSet.has(k));
+
+  const { error } = await db
+    .from("mem_records")
+    .update({ keys: filtered })
+    .eq("id", id);
+
+  if (error) {
+    console.error("Error removing keys:", error);
+    return false;
+  }
+
+  return true;
+}
+
+// =============================================================================
+// External References
+// =============================================================================
+
+/**
+ * Add an external reference to a record
+ */
+export async function addExternalRef(
+  recordId: string,
+  system: string,
+  externalId: string,
+  options: AddExternalRefOptions = {}
+): Promise<string | null> {
+  const { url, metadata } = options;
+  const db = getSupabase();
+
+  const { data, error } = await db.rpc("mem_add_external_ref", {
+    p_record_id: recordId,
+    p_system: system,
+    p_external_id: externalId,
+    p_external_url: url || null,
+    p_metadata: metadata || {},
+  });
+
+  if (error) {
+    console.error("Error adding external ref:", error);
+    return null;
+  }
+
+  return data;
+}
+
+/**
+ * Find a record by its external reference
+ */
+export async function findByExternalRef(
+  system: string,
+  externalId: string
+): Promise<{ record: MemRecord; ref: ExternalRef } | null> {
+  const db = getSupabase();
+
+  const { data, error } = await db.rpc("mem_find_by_external_ref", {
+    p_system: system,
+    p_external_id: externalId,
+  });
+
+  if (error) {
+    console.error("Error finding by external ref:", error);
+    return null;
+  }
+
+  if (!data || data.length === 0) return null;
+
+  const row = data[0];
+  return {
+    record: {
+      id: row.id,
+      type: row.type,
+      data: row.data,
+      tags: row.tags,
+      weight: row.weight,
+      status: row.status,
+    } as MemRecord,
+    ref: {
+      id: row.ref_id,
+      record_id: row.id,
+      system,
+      external_id: externalId,
+      external_url: row.external_url,
+      metadata: row.ref_metadata,
+      last_synced_at: row.last_synced_at,
+    } as ExternalRef,
+  };
+}
+
+/**
+ * List all external references for a record
+ */
+export async function listExternalRefs(
+  recordId: string
+): Promise<ExternalRef[]> {
+  const db = getSupabase();
+
+  const { data, error } = await db.rpc("mem_list_external_refs", {
+    p_record_id: recordId,
+  });
+
+  if (error) {
+    console.error("Error listing external refs:", error);
+    return [];
+  }
+
+  return (data || []).map((r: Record<string, unknown>) => ({
+    ...r,
+    record_id: recordId,
+  })) as ExternalRef[];
+}
+
+/**
+ * Update the last_synced_at timestamp for an external ref
+ */
+export async function touchExternalRef(
+  system: string,
+  externalId: string
+): Promise<boolean> {
+  const db = getSupabase();
+
+  const { error } = await db
+    .from("mem_external_refs")
+    .update({ last_synced_at: new Date().toISOString() })
+    .eq("system", system)
+    .eq("external_id", externalId);
+
+  return !error;
 }
 
 // =============================================================================

@@ -7,7 +7,7 @@
  * - mem_links: Relationships between records
  */
 
-export const SCHEMA_VERSION = "1.0.0";
+export const SCHEMA_VERSION = "1.2.0";
 
 export const SCHEMA_SQL = `
 -- =============================================================================
@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS mem_records (
     type TEXT NOT NULL,                    -- user-defined (note, decision, preference, etc.)
     data JSONB NOT NULL,                   -- flexible structure
     tags TEXT[],
+    keys TEXT[],
     embedding vector(1536),
     searchable_text TEXT,
     searchable tsvector GENERATED ALWAYS AS (
@@ -60,11 +61,15 @@ CREATE TABLE IF NOT EXISTS mem_links (
     UNIQUE(from_id, to_id, relation)
 );
 
+-- Upgrade path: add keys column if it doesn't exist
+ALTER TABLE mem_records ADD COLUMN IF NOT EXISTS keys TEXT[];
+
 -- =============================================================================
 -- INDEXES
 -- =============================================================================
 
 CREATE INDEX IF NOT EXISTS idx_mem_records_type ON mem_records(type);
+CREATE INDEX IF NOT EXISTS idx_mem_records_keys ON mem_records USING GIN(keys);
 CREATE INDEX IF NOT EXISTS idx_mem_records_tags ON mem_records USING GIN(tags);
 CREATE INDEX IF NOT EXISTS idx_mem_records_data ON mem_records USING GIN(data);
 CREATE INDEX IF NOT EXISTS idx_mem_records_searchable ON mem_records USING GIN(searchable);
@@ -79,6 +84,25 @@ CREATE INDEX IF NOT EXISTS idx_mem_links_relation ON mem_links(relation);
 CREATE INDEX IF NOT EXISTS idx_mem_links_from_relation ON mem_links(from_id, relation);
 CREATE INDEX IF NOT EXISTS idx_mem_links_to_relation ON mem_links(to_id, relation);
 CREATE INDEX IF NOT EXISTS idx_mem_links_bidirectional ON mem_links(bidirectional) WHERE bidirectional = true;
+
+-- =============================================================================
+-- EXTERNAL REFERENCES: Track where records came from
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS mem_external_refs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    record_id UUID NOT NULL REFERENCES mem_records(id) ON DELETE CASCADE,
+    system TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    external_url TEXT,
+    metadata JSONB DEFAULT '{}',
+    last_synced_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(record_id, system, external_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_ext_refs_lookup ON mem_external_refs(system, external_id);
+CREATE INDEX IF NOT EXISTS idx_mem_ext_refs_record ON mem_external_refs(record_id);
 
 -- =============================================================================
 -- SCHEMA METADATA
@@ -232,6 +256,7 @@ RETURNS TABLE (
     type TEXT,
     data JSONB,
     tags TEXT[],
+    keys TEXT[],
     weight INTEGER,
     access_count INTEGER,
     relevance_score FLOAT
@@ -245,6 +270,7 @@ BEGIN
         r.type,
         r.data,
         r.tags,
+        r.keys,
         r.weight,
         r.access_count,
         mem_calculate_relevance(r.weight, r.access_count, r.last_accessed_at, r.created_at)::FLOAT AS relevance_score
@@ -343,6 +369,7 @@ AS $$
         'type', r.type,
         'data', r.data,
         'tags', r.tags,
+        'keys', r.keys,
         'weight', r.weight,
         'access_count', r.access_count,
         'status', r.status,
@@ -475,6 +502,197 @@ BEGIN
     AND to_id = to_record_id
     AND relation = relation_type;
     RETURN FOUND;
+END;
+$$;
+
+-- =============================================================================
+-- EXTERNAL REFERENCES
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION mem_add_external_ref(
+    p_record_id UUID,
+    p_system TEXT,
+    p_external_id TEXT,
+    p_external_url TEXT DEFAULT NULL,
+    p_metadata JSONB DEFAULT '{}'
+)
+RETURNS UUID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    ref_id UUID;
+BEGIN
+    INSERT INTO mem_external_refs (record_id, system, external_id, external_url, metadata)
+    VALUES (p_record_id, p_system, p_external_id, p_external_url, p_metadata)
+    ON CONFLICT (record_id, system, external_id) DO UPDATE
+    SET external_url = COALESCE(p_external_url, mem_external_refs.external_url),
+        metadata = COALESCE(p_metadata, mem_external_refs.metadata),
+        last_synced_at = NOW()
+    RETURNING id INTO ref_id;
+    RETURN ref_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION mem_find_by_external_ref(
+    p_system TEXT,
+    p_external_id TEXT
+)
+RETURNS TABLE (
+    id UUID,
+    type TEXT,
+    data JSONB,
+    tags TEXT[],
+    weight INTEGER,
+    status TEXT,
+    ref_id UUID,
+    external_url TEXT,
+    ref_metadata JSONB,
+    last_synced_at TIMESTAMPTZ
+)
+LANGUAGE sql
+AS $$
+    SELECT
+        r.id,
+        r.type,
+        r.data,
+        r.tags,
+        r.weight,
+        r.status,
+        e.id AS ref_id,
+        e.external_url,
+        e.metadata AS ref_metadata,
+        e.last_synced_at
+    FROM mem_external_refs e
+    JOIN mem_records r ON r.id = e.record_id
+    WHERE e.system = p_system AND e.external_id = p_external_id;
+$$;
+
+CREATE OR REPLACE FUNCTION mem_list_external_refs(p_record_id UUID)
+RETURNS TABLE (
+    id UUID,
+    system TEXT,
+    external_id TEXT,
+    external_url TEXT,
+    metadata JSONB,
+    last_synced_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ
+)
+LANGUAGE sql
+AS $$
+    SELECT id, system, external_id, external_url, metadata, last_synced_at, created_at
+    FROM mem_external_refs
+    WHERE record_id = p_record_id
+    ORDER BY created_at;
+$$;
+
+-- =============================================================================
+-- KEY-BASED LOOKUP AND UPSERT
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION mem_enforce_key_uniqueness()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    conflicting_id UUID;
+BEGIN
+    IF NEW.keys IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    SELECT id INTO conflicting_id
+    FROM mem_records
+    WHERE keys && NEW.keys AND id != NEW.id
+    LIMIT 1;
+
+    IF conflicting_id IS NOT NULL THEN
+        RAISE EXCEPTION 'Key conflict: one or more keys in % already exist on record %',
+            NEW.keys, conflicting_id
+            USING ERRCODE = 'unique_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS mem_enforce_key_uniqueness_trigger ON mem_records;
+CREATE TRIGGER mem_enforce_key_uniqueness_trigger
+BEFORE INSERT OR UPDATE ON mem_records
+FOR EACH ROW
+EXECUTE FUNCTION mem_enforce_key_uniqueness();
+
+CREATE OR REPLACE FUNCTION mem_find_by_key(p_key TEXT)
+RETURNS TABLE (
+    id UUID,
+    type TEXT,
+    data JSONB,
+    tags TEXT[],
+    keys TEXT[],
+    weight INTEGER,
+    access_count INTEGER,
+    status TEXT,
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+)
+LANGUAGE sql
+AS $$
+    SELECT r.id, r.type, r.data, r.tags, r.keys, r.weight, r.access_count,
+           r.status, r.created_at, r.updated_at
+    FROM mem_records r
+    WHERE r.keys @> ARRAY[p_key];
+$$;
+
+CREATE OR REPLACE FUNCTION mem_upsert_by_keys(
+    p_type TEXT,
+    p_data JSONB,
+    p_tags TEXT[],
+    p_keys TEXT[],
+    p_weight INTEGER DEFAULT NULL,
+    p_embedding vector(1536) DEFAULT NULL
+)
+RETURNS TABLE (id UUID, action TEXT)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    existing_id UUID;
+    result_id UUID;
+    result_action TEXT;
+BEGIN
+    -- Find existing record by key overlap
+    SELECT r.id INTO existing_id
+    FROM mem_records r
+    WHERE r.keys && p_keys
+    LIMIT 1;
+
+    IF existing_id IS NOT NULL THEN
+        -- Update: merge data, union tags and keys
+        UPDATE mem_records r
+        SET data = r.data || p_data,
+            tags = (SELECT ARRAY(SELECT DISTINCT unnest FROM unnest(COALESCE(r.tags, '{}') || COALESCE(p_tags, '{}')))),
+            keys = (SELECT ARRAY(SELECT DISTINCT unnest FROM unnest(COALESCE(r.keys, '{}') || COALESCE(p_keys, '{}')))),
+            weight = COALESCE(p_weight, r.weight),
+            embedding = COALESCE(p_embedding, r.embedding)
+        WHERE r.id = existing_id;
+
+        result_id := existing_id;
+        result_action := 'updated';
+    ELSE
+        -- Insert new record
+        INSERT INTO mem_records (type, data, tags, keys, weight, embedding)
+        VALUES (
+            p_type,
+            p_data,
+            p_tags,
+            p_keys,
+            COALESCE(p_weight, 5),
+            p_embedding
+        )
+        RETURNING mem_records.id INTO result_id;
+
+        result_action := 'inserted';
+    END IF;
+
+    RETURN QUERY SELECT result_id, result_action;
 END;
 $$;
 
