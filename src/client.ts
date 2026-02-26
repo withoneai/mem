@@ -75,6 +75,7 @@ export async function getEmbedding(text: string): Promise<number[] | null> {
     const response = await client.embeddings.create({
       model: "text-embedding-3-small",
       input: text.slice(0, 8000),
+      dimensions: 1536,
     });
     return response.data[0].embedding;
   } catch (error) {
