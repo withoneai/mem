@@ -70,18 +70,25 @@ export async function getEmbedding(text: string): Promise<number[] | null> {
   if (!text?.trim()) return null;
   if (!hasOpenAI()) return null;
 
-  try {
-    const client = getOpenAI();
-    const response = await client.embeddings.create({
-      model: "text-embedding-3-small",
-      input: text.slice(0, 8000),
-      dimensions: 1536,
-    });
-    return response.data[0].embedding;
-  } catch (error) {
-    console.error("Warning: Failed to generate embedding:", error);
-    return null;
+  const client = getOpenAI();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await client.embeddings.create({
+        model: "text-embedding-3-small",
+        input: text.slice(0, 8000),
+        dimensions: 1536,
+      });
+      const embedding = response.data[0].embedding;
+      if (embedding.length === 1536) return embedding;
+      // Wrong dimensions returned, retry
+    } catch (error) {
+      if (attempt === 2) {
+        console.error("Warning: Failed to generate embedding:", error);
+        return null;
+      }
+    }
   }
+  return null;
 }
 
 export function extractSearchableText(data: Record<string, unknown>): string {

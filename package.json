@@ -1,6 +1,6 @@
 {
   "name": "@withone/mem",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Memory for AI agents. Simple, fast, works anywhere.",
   "keywords": [
     "ai",
@@ -42,6 +42,7 @@
   "dependencies": {
     "@clack/prompts": "^1.0.0",
     "@supabase/supabase-js": "^2.49.1",
+    "@withone/mem": "^0.2.2",
     "commander": "^12.1.0",
     "openai": "^4.77.0",
     "picocolors": "^1.1.1"
