@@ -415,6 +415,7 @@ program
       for (const r of results) {
         const data = r.data as Record<string, unknown>;
         const name =
+          (data.name as string) ||
           (data.content as string)?.slice(0, 50) ||
           (data.topic as string) ||
           (data.title as string) ||
