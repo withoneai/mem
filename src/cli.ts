@@ -58,6 +58,8 @@ import {
   upsertByKeys,
   addKeys,
   removeKeys,
+  getPersonByEmail,
+  getPendingFollowups,
 } from "./client.js";
 import { SCHEMA_VERSION, getMigrationSQL } from "./schema.js";
 
@@ -525,6 +527,32 @@ program
   .action(async (ids: string[]) => {
     const count = await flush(ids);
     console.log(`Flushed ${count} memories (access count reset)`);
+  });
+
+// =============================================================================
+// Convenience Shortcuts
+// =============================================================================
+
+program
+  .command("person <email>")
+  .description("Get a person by email with all links")
+  .action(async (email: string) => {
+    const result = await getPersonByEmail(email);
+    if (result) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log("Person not found");
+      process.exit(1);
+    }
+  });
+
+program
+  .command("followups")
+  .description("List pending follow-ups")
+  .action(async () => {
+    const results = await getPendingFollowups();
+    console.log(JSON.stringify(results, null, 2));
+    console.log(`\n${results.length} pending follow-ups`);
   });
 
 // =============================================================================

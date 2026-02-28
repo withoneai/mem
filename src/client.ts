@@ -902,6 +902,57 @@ export async function migrate(): Promise<boolean> {
 }
 
 // =============================================================================
+// Convenience Shortcuts
+// =============================================================================
+
+/**
+ * Get a person record by email with all their links
+ */
+export async function getPersonByEmail(
+  email: string
+): Promise<MemRecordWithLinks | null> {
+  const db = getSupabase();
+
+  // Find the person record by email
+  const { data: records, error } = await db
+    .from("mem_records")
+    .select("id")
+    .eq("type", "person")
+    .eq("data->>email", email)
+    .limit(1);
+
+  if (error || !records || records.length === 0) {
+    return null;
+  }
+
+  // Get with full links
+  return (await get(records[0].id, true)) as MemRecordWithLinks | null;
+}
+
+/**
+ * Get pending follow-ups (interactions with follow_up_date set and not done)
+ */
+export async function getPendingFollowups(): Promise<MemRecord[]> {
+  const db = getSupabase();
+
+  const { data, error } = await db
+    .from("mem_records")
+    .select("*")
+    .eq("type", "interaction")
+    .not("data->>follow_up_date", "is", null)
+    .or("data->>follow_up_done.is.null,data->>follow_up_done.neq.true")
+    .eq("status", "active")
+    .order("data->>follow_up_date", { ascending: true });
+
+  if (error) {
+    console.error("Error getting followups:", error);
+    return [];
+  }
+
+  return data || [];
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 

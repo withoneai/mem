@@ -48,6 +48,10 @@ export {
   listExternalRefs,
   touchExternalRef,
 
+  // Convenience Shortcuts
+  getPersonByEmail,
+  getPendingFollowups,
+
   // Migration
   migrate,
 
