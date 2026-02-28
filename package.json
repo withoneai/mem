@@ -1,6 +1,6 @@
 {
   "name": "@withone/mem",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Memory for AI agents. Simple, fast, works anywhere.",
   "keywords": [
     "ai",
